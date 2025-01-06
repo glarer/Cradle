@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Multiply function running time test</title>
+	<script>
+		let timer = null;
+		// We use total run time as the threshold. 
+		// ! modify the threshold
+		let threshold = 0.5;
+		let last_time = 0.5;
+		let recv_bin = "";
+
+		function saveLogToLocal(message) {
+			const now = new Date().toISOString();
+			const log = `${message}`;
+			localStorage.setItem('log_' + now, log);
+		}
+
+		function multiply(a, b) {
+			for (let i = 0; i < 10; i++) {
+				a += b;
+				a *= b;
+				a /= b;
+				a -= b;
+			}
+			return a * b;
+		}
+
+		function testMultiplyFunction() {
+			// const running_total_start = performance.now();
+			let result;
+			const iterations = 10000;	// Tested ok on sample rate 10 -> interval 95
+			// const pad_iterations = 6000000;
+			const startTime = performance.now();
+			for (let i = 0; i < iterations; i++) {
+			result = multiply(i, i);
+			}
+			const endTime = performance.now();
+			const run_time = endTime - startTime;
+
+			// Here we only record the P/E running seqs. Do not decoding.			
+			if (run_time > threshold){
+				recv_bin += '0';		// E-core run
+				// Padding the run_time to inline with the P-core.
+				// for (let i = 0; i < pad_iterations; i++) {
+					// result = multiply(i, i);
+				// }
+			}
+			else
+				recv_bin += '1';		// P-core run
+
+			last_time = run_time;
+
+			const id_running_time = document.getElementById('output');
+			id_running_time.textContent = `Time of multiply function running: ${run_time.toFixed(10)} `;
+
+			const id_bin = document.getElementById('bin');
+			id_bin.textContent = `Received bits from the sender: ${recv_bin}`;
+		}
+
+		function startTest() {
+			if (!timer) {
+				timer = setInterval(testMultiplyFunction, 96);	// 100 ms
+				recv_bin = "";
+			}
+		}
+
+		function stopTest() {
+			if (timer) {
+				clearInterval(timer);
+				timer = null;
+			}
+		}
+
+		function toggleTest() {
+			if (timer) {
+				stopTest();
+			} else {
+				startTest();
+			}
+		}
+
+	</script>
+</head>
+
+<body>
+	<h1>Multiply function running time test</h1>
+
+	<button onclick="toggleTest()">Start/Stop</button>
+
+	<p id="output">Output here</p>
+	<!-- <p id="msg">Received msg</p> -->
+	<p id="bin">Received binary</p>
+</body>
+<style>
+	p {
+	  word-wrap: break-word;
+	  overflow-wrap: break-word;
+	  white-space: normal;
+	  word-break: break-all;
+	}
+	.container {
+	  width: 100%;
+	}
+</style>
+</html>
