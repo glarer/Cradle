@@ -1,4 +1,6 @@
-## This is the anonymous repository of paper 'Cradle: A Cross-Sandbox and Cross-VM Covert Channel on Hybrid Architecture CPUs'
+## This is the anonymous repository of paper 'A Covert Channel via Scheduler-Driven Core Migration on Hybrid CPUs'
 
 
 The usage of sender and receiver can be found in subfolder.
+
+Codes of other platforms (x86/arm Windows, macOS) will be added soon.

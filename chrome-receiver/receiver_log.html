@@ -4,106 +4,624 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Multiply function running time test</title>
+	<title>Covert Channel Receiver</title>
 	<script>
-		let timer = null;
-		// We use total run time as the threshold. 
-		// ! modify the threshold
-		let threshold = 0.5;
-		let last_time = 0.5;
-		let recv_bin = "";
+		// ============ Configuration ============
+		let CONFIG = {
+			// Workload iterations - adjust for P/E core differentiation
+			workloadIterations: 10000,
+			// Sample interval in ms (for interval mode, min ~4ms due to browser limit)
+			sampleIntervalMs: 10,
+			// Sampling mode: 'interval', 'busyloop', or 'postmessage'
+			samplingMode: 'postmessage',
+			// For busyloop/postmessage mode: how often to update UI (every N samples)
+			uiUpdateInterval: 100,
+		};
 
-		function saveLogToLocal(message) {
-			const now = new Date().toISOString();
-			const log = `${message}`;
-			localStorage.setItem('log_' + now, log);
+		// ============ State ============
+		let isRunning = false;
+		let rawData = [];  // [{timestamp, runTime, sampleIndex}, ...]
+		let sampleIndex = 0;
+		let startTimestamp = 0;
+		let intervalId = null;
+		let animationFrameId = null;
+		let postMessageTimeoutId = null;
+		let lastPostMessageSampleTime = 0;
+
+		// ============ PostMessage Sampling ============
+		const POST_MESSAGE_NAME = "covert-channel-sample";
+		
+		function scheduleNextPostMessage(delayMs = 0) {
+			if (!isRunning) return;
+			if (postMessageTimeoutId) {
+				clearTimeout(postMessageTimeoutId);
+				postMessageTimeoutId = null;
+			}
+			if (delayMs <= 0) {
+				window.postMessage(POST_MESSAGE_NAME, "*");
+			} else {
+				postMessageTimeoutId = setTimeout(() => {
+					window.postMessage(POST_MESSAGE_NAME, "*");
+				}, delayMs);
+			}
 		}
 
-		function multiply(a, b) {
-			for (let i = 0; i < 10; i++) {
+		function handlePostMessage(event) {
+			if (event.data !== POST_MESSAGE_NAME) return;
+			if (!isRunning) return;
+			
+			const now = performance.now();
+			const elapsed = now - lastPostMessageSampleTime;
+			const interval = CONFIG.sampleIntervalMs;
+			
+			if (elapsed >= interval) {
+				// Take sample at (approx) interval cadence
+				takeSample();
+				lastPostMessageSampleTime = now;
+				
+				// Update UI periodically
+				if (sampleIndex % CONFIG.uiUpdateInterval === 0) {
+					updateDisplay();
+				}
+			}
+			
+			// Schedule next tick to approximate interval timing
+			const delay = Math.max(0, interval - (performance.now() - lastPostMessageSampleTime));
+			scheduleNextPostMessage(delay);
+		}
+		
+		// Register message handler
+		window.addEventListener("message", handlePostMessage, true);
+
+		// ============ Workload Functions ============
+		// Pre-allocate arrays for memory-intensive workload
+		const ARRAY_SIZE = 65536;
+		let memArray = new Float64Array(ARRAY_SIZE);
+		let indexArray = new Uint32Array(ARRAY_SIZE);
+
+		// Initialize arrays
+		(function initArrays() {
+			for (let i = 0; i < ARRAY_SIZE; i++) {
+				memArray[i] = Math.random();
+				indexArray[i] = Math.floor(Math.random() * ARRAY_SIZE);
+			}
+		})();
+
+		// Workload type selector - default to 'math'
+		let currentWorkloadType = 'math';
+
+		function workload() {
+			switch (currentWorkloadType) {
+				case 'memory': return workloadMemory();
+				case 'branch': return workloadBranch();
+				case 'math': return workloadMath();
+				case 'simple': return workloadSimple();
+				default: return workloadMath();
+			}
+		}
+
+		// 1. Memory-intensive workload (cache-sensitive, random access)
+		function workloadMemory() {
+			let sum = 0;
+			const iterations = CONFIG.workloadIterations;
+			for (let i = 0; i < iterations; i++) {
+				const idx = indexArray[i % ARRAY_SIZE];
+				sum += memArray[idx];
+				memArray[idx] = sum * 0.999;
+			}
+			return sum;
+		}
+
+		// 2. Branch-heavy workload (unpredictable branches)
+		function workloadBranch() {
+			let sum = 0;
+			let state = 1;
+			const iterations = CONFIG.workloadIterations;
+			for (let i = 0; i < iterations; i++) {
+				state = (state * 1103515245 + 12345) & 0x7fffffff;
+				if (state & 1) {
+					sum += state;
+				} else {
+					sum -= state;
+				}
+				if ((state >> 4) & 1) {
+					sum ^= state;
+				}
+				if ((state >> 8) & 1) {
+					sum = (sum << 1) | (sum >> 31);
+				}
+			}
+			return sum;
+		}
+
+		// 3. Math-intensive workload (transcendental functions) - DEFAULT
+		function workloadMath() {
+			let sum = 0;
+			const iterations = CONFIG.workloadIterations;
+			for (let i = 0; i < iterations; i++) {
+				const x = (i * 0.001) % 6.28318;
+				sum += Math.sin(x);
+				sum += Math.cos(x);
+				sum += Math.sqrt(Math.abs(sum) + 1);
+			}
+			return sum;
+		}
+
+		// 4. Original simple workload (baseline)
+		function workloadSimple() {
+			let a = 1.5, b = 2.3;
+			for (let i = 0; i < CONFIG.workloadIterations; i++) {
 				a += b;
 				a *= b;
 				a /= b;
 				a -= b;
 			}
-			return a * b;
+			return a;
 		}
 
-		function testMultiplyFunction() {
-			// const running_total_start = performance.now();
-			let result;
-			const iterations = 10000;	// Tested ok on sample rate 10 -> interval 95
-			// const pad_iterations = 6000000;
-			const startTime = performance.now();
-			for (let i = 0; i < iterations; i++) {
-			result = multiply(i, i);
-			}
-			const endTime = performance.now();
-			const run_time = endTime - startTime;
+		// ============ Single Sample ============
+		function takeSample() {
+			const perfStart = performance.now();
+			workload();
+			const perfEnd = performance.now();
+			const perfRunTime = perfEnd - perfStart;
 
-			// Here we only record the P/E running seqs. Do not decoding.			
-			if (run_time > threshold){
-				recv_bin += '0';		// E-core run
-				// Padding the run_time to inline with the P-core.
-				// for (let i = 0; i < pad_iterations; i++) {
-					// result = multiply(i, i);
-				// }
-			}
-			else
-				recv_bin += '1';		// P-core run
+			rawData.push({
+				timestamp: perfStart,
+				runTime: perfRunTime,
+				sampleIndex: sampleIndex++
+			});
 
-			last_time = run_time;
-
-			const id_running_time = document.getElementById('output');
-			id_running_time.textContent = `Time of multiply function running: ${run_time.toFixed(10)} `;
-
-			const id_bin = document.getElementById('bin');
-			id_bin.textContent = `Received bits from the sender: ${recv_bin}`;
+			return perfRunTime;
 		}
 
-		function startTest() {
-			if (!timer) {
-				timer = setInterval(testMultiplyFunction, 96);	// 100 ms
-				recv_bin = "";
+		// ============ Interval-based Sampling (one sample per interval, min ~4ms) ============
+		function samplingTick() {
+			if (!isRunning) return;
+
+			takeSample();
+			updateDisplay();
+		}
+
+		// ============ Busy-loop Sampling (max speed, uses requestAnimationFrame for chunks) ============
+		function busyLoopSampling() {
+			if (!isRunning) return;
+
+			const chunkStart = performance.now();
+			const chunkDuration = 16; // ~60fps, yield to browser every 16ms
+
+			// Sample continuously for chunkDuration ms
+			while (performance.now() - chunkStart < chunkDuration) {
+				takeSample();
+
+				// Update UI periodically
+				if (sampleIndex % CONFIG.uiUpdateInterval === 0) {
+					updateDisplay();
+				}
+			}
+
+			// Schedule next chunk
+			animationFrameId = requestAnimationFrame(busyLoopSampling);
+		}
+
+		// ============ UI Update ============
+		function updateDisplay() {
+			const elapsed = (performance.now() - startTimestamp) / 1000;
+			const actualRate = sampleIndex / elapsed;
+
+			document.getElementById('sampleCount').textContent = sampleIndex;
+			document.getElementById('elapsedTime').textContent = elapsed.toFixed(2);
+			document.getElementById('sampleRate').textContent = actualRate.toFixed(1);
+
+			if (rawData.length > 0) {
+				const recentData = rawData.slice(-10);
+				const avgRunTime = recentData.reduce((sum, d) => sum + d.runTime, 0) / recentData.length;
+				document.getElementById('avgRunTime').textContent = avgRunTime.toFixed(4);
+				document.getElementById('lastRunTime').textContent = rawData[rawData.length - 1].runTime.toFixed(4);
 			}
 		}
 
-		function stopTest() {
-			if (timer) {
-				clearInterval(timer);
-				timer = null;
-			}
-		}
+		// ============ Controls ============
+		function startSampling() {
+			if (isRunning) return;
 
-		function toggleTest() {
-			if (timer) {
-				stopTest();
+			isRunning = true;
+			rawData = [];
+			sampleIndex = 0;
+			startTimestamp = performance.now();
+
+			const mode = CONFIG.samplingMode;
+			document.getElementById('status').textContent = `Running (${mode} mode)...`;
+			document.getElementById('startBtn').disabled = true;
+			document.getElementById('stopBtn').disabled = false;
+
+			if (mode === 'busyloop') {
+				// Use busy-loop for maximum speed
+				busyLoopSampling();
+			} else if (mode === 'postmessage') {
+				// Use postMessage for high-speed with less noise
+				lastPostMessageSampleTime = performance.now();
+				scheduleNextPostMessage(0);
 			} else {
-				startTest();
+				// Use setInterval (min ~4ms)
+				intervalId = setInterval(samplingTick, CONFIG.sampleIntervalMs);
 			}
 		}
 
+		function stopSampling() {
+			isRunning = false;
+			if (intervalId) {
+				clearInterval(intervalId);
+				intervalId = null;
+			}
+			if (animationFrameId) {
+				cancelAnimationFrame(animationFrameId);
+				animationFrameId = null;
+			}
+			if (postMessageTimeoutId) {
+				clearTimeout(postMessageTimeoutId);
+				postMessageTimeoutId = null;
+			}
+			// postMessage mode stops automatically via isRunning check
+
+			document.getElementById('status').textContent = 'Stopped';
+			document.getElementById('startBtn').disabled = false;
+			document.getElementById('stopBtn').disabled = true;
+
+			updateDisplay();
+		}
+
+		// ============ Data Export ============
+		function downloadCSV() {
+			if (rawData.length === 0) {
+				alert('No data to export!');
+				return;
+			}
+
+			const header = 'sampleIndex,timestamp,runTime\n';
+			const rows = rawData.map(d =>
+				`${d.sampleIndex},${d.timestamp.toFixed(6)},${d.runTime.toFixed(6)}`
+			).join('\n');
+
+			const csv = header + rows;
+			downloadFile(csv, 'receiver_data.csv', 'text/csv');
+		}
+
+		function downloadJSON() {
+			if (rawData.length === 0) {
+				alert('No data to export!');
+				return;
+			}
+
+			const elapsed = (rawData[rawData.length - 1].timestamp - rawData[0].timestamp) / 1000;
+			const exportData = {
+				metadata: {
+					startTime: new Date().toISOString(),
+					totalSamples: rawData.length,
+					elapsedSeconds: elapsed,
+					actualSampleRateHz: rawData.length / elapsed,
+					config: CONFIG
+				},
+				samples: rawData
+			};
+
+			const json = JSON.stringify(exportData, null, 2);
+			downloadFile(json, 'receiver_data.json', 'application/json');
+		}
+
+		function downloadFile(content, filename, mimeType) {
+			const blob = new Blob([content], { type: mimeType });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = filename;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+		}
+
+		// ============ Calibration ============
+		function runCalibration() {
+			const calibrationSamples = 100;
+			const times = [];
+
+			document.getElementById('calibrationResult').textContent = 'Calibrating...';
+
+			setTimeout(() => {
+				for (let i = 0; i < calibrationSamples; i++) {
+					const start = performance.now();
+					workload();
+					const end = performance.now();
+					times.push(end - start);
+				}
+
+				times.sort((a, b) => a - b);
+				const min = times[0];
+				const max = times[times.length - 1];
+				const avg = times.reduce((a, b) => a + b, 0) / times.length;
+				const median = times[Math.floor(times.length / 2)];
+
+				document.getElementById('calibrationResult').innerHTML =
+					`<strong>Calibration Results (${calibrationSamples} samples):</strong><br>
+					 Min: ${min.toFixed(4)} ms<br>
+					 Max: ${max.toFixed(4)} ms<br>
+					 Avg: ${avg.toFixed(4)} ms<br>
+					 Median: ${median.toFixed(4)} ms<br>
+					 <em>Suggested threshold: ${((min + max) / 2).toFixed(4)} ms</em>`;
+			}, 100);
+		}
+
+		// ============ Configuration Update ============
+		function updateConfig() {
+			const workloadInput = document.getElementById('workloadIterationsInput');
+			const intervalInput = document.getElementById('sampleIntervalInput');
+			const samplingModeSelect = document.getElementById('samplingModeSelect');
+
+			const newWorkload = parseInt(workloadInput.value, 10);
+			const newInterval = parseInt(intervalInput.value, 10);
+
+			if (!isNaN(newWorkload) && newWorkload > 0) {
+				CONFIG.workloadIterations = newWorkload;
+			}
+			if (!isNaN(newInterval) && newInterval > 0) {
+				CONFIG.sampleIntervalMs = newInterval;
+			}
+
+			// Also update sampling mode in case the dropdown was changed without triggering onchange
+			CONFIG.samplingMode = samplingModeSelect.value;
+
+			document.getElementById('configStatus').textContent =
+				`✓ Updated: workload=${CONFIG.workloadIterations}, interval=${CONFIG.sampleIntervalMs}ms, mode=${CONFIG.samplingMode}`;
+		}
+
+		function updateWorkloadType() {
+			const selector = document.getElementById('workloadTypeSelect');
+			currentWorkloadType = selector.value;
+			document.getElementById('configStatus').textContent =
+				`✓ Workload type changed to: ${currentWorkloadType}`;
+		}
+
+		// ============ Single Sample Test ============
+		function runSingleTest() {
+			const resultEl = document.getElementById('singleTestResult');
+			resultEl.textContent = 'Running...';
+
+			setTimeout(() => {
+				const start = performance.now();
+				workload();
+				const end = performance.now();
+				const runTime = end - start;
+
+				const estimatedHz = 1000 / runTime;
+
+				resultEl.innerHTML =
+					`<strong>Single Sample Result:</strong><br>
+					 Run Time: <span style="font-size:20px;color:#007bff;">${runTime.toFixed(4)} ms</span><br>
+					 Estimated Max Rate: <span style="font-size:20px;color:#28a745;">${estimatedHz.toFixed(1)} Hz</span><br>
+					 <em>(with workloadIterations = ${CONFIG.workloadIterations})</em>`;
+			}, 10);
+		}
 	</script>
+	<style>
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+			max-width: 800px;
+			margin: 40px auto;
+			padding: 20px;
+			background: #f5f5f5;
+		}
+
+		h1 {
+			color: #333;
+		}
+
+		.panel {
+			background: white;
+			border-radius: 8px;
+			padding: 20px;
+			margin-bottom: 20px;
+			box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+		}
+
+		.stats {
+			display: grid;
+			grid-template-columns: repeat(2, 1fr);
+			gap: 15px;
+		}
+
+		.stat-item {
+			background: #f8f9fa;
+			padding: 15px;
+			border-radius: 6px;
+		}
+
+		.stat-label {
+			font-size: 12px;
+			color: #666;
+			text-transform: uppercase;
+		}
+
+		.stat-value {
+			font-size: 24px;
+			font-weight: bold;
+			color: #333;
+		}
+
+		button {
+			padding: 10px 20px;
+			margin: 5px;
+			border: none;
+			border-radius: 6px;
+			font-size: 14px;
+			cursor: pointer;
+			transition: background 0.2s;
+		}
+
+		button:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.btn-start {
+			background: #28a745;
+			color: white;
+		}
+
+		.btn-stop {
+			background: #dc3545;
+			color: white;
+		}
+
+		.btn-export {
+			background: #007bff;
+			color: white;
+		}
+
+		.btn-calibrate {
+			background: #6c757d;
+			color: white;
+		}
+
+		.btn-test {
+			background: #17a2b8;
+			color: white;
+		}
+
+		.btn-apply {
+			background: #ffc107;
+			color: #333;
+		}
+
+		#status {
+			font-size: 18px;
+			font-weight: bold;
+			color: #666;
+		}
+
+		#calibrationResult,
+		#singleTestResult {
+			margin-top: 15px;
+			padding: 15px;
+			background: #e9ecef;
+			border-radius: 6px;
+			font-family: monospace;
+			white-space: pre-wrap;
+		}
+
+		.config-row {
+			display: flex;
+			align-items: center;
+			gap: 15px;
+			margin-bottom: 10px;
+			flex-wrap: wrap;
+		}
+
+		.config-row label {
+			font-weight: 500;
+			min-width: 150px;
+		}
+
+		.config-row input,
+		.config-row select {
+			padding: 8px 12px;
+			border: 1px solid #ccc;
+			border-radius: 4px;
+			font-size: 14px;
+			width: 180px;
+		}
+
+		#configStatus {
+			margin-top: 10px;
+			color: #28a745;
+			font-weight: 500;
+		}
+	</style>
 </head>
 
 <body>
-	<h1>Multiply function running time test</h1>
+	<h1>🎯 Covert Channel Receiver</h1>
 
-	<button onclick="toggleTest()">Start/Stop</button>
+	<div class="panel">
+		<h2>⚙️ Configuration</h2>
+		<div class="config-row">
+			<label for="workloadIterationsInput">Workload Iterations:</label>
+			<input type="number" id="workloadIterationsInput" value="10000" min="100" step="1000">
+		</div>
+		<div class="config-row">
+			<label for="sampleIntervalInput">Sample Interval (ms):</label>
+			<input type="number" id="sampleIntervalInput" value="10" min="1" step="1">
+			<small style="color:#888;">(interval mode only, min ~4ms)</small>
+		</div>
+		<div class="config-row">
+			<label for="workloadTypeSelect">Workload Type:</label>
+			<select id="workloadTypeSelect" onchange="updateWorkloadType()">
+				<option value="math" selected>📐 Math (sin/cos/sqrt)</option>
+				<option value="memory">🗃️ Memory (cache-sensitive)</option>
+				<option value="branch">🌲 Branch (unpredictable)</option>
+				<option value="simple">➕ Simple (arithmetic)</option>
+			</select>
+		</div>
+		<div class="config-row">
+			<label for="samplingModeSelect">Sampling Mode:</label>
+			<select id="samplingModeSelect" onchange="updateSamplingMode()">
+				<option value="postmessage" selected>📨 PostMessage (fast, low noise)</option>
+				<option value="busyloop">🚀 Busy-loop (max speed, more noise)</option>
+				<option value="interval">⏱️ Interval (low CPU, min 4ms)</option>
+			</select>
+		</div>
+		<button class="btn-apply" onclick="updateConfig()">✓ Apply Config</button>
+		<button class="btn-test" onclick="runSingleTest()">⚡ Single Sample Test</button>
+		<div id="configStatus"></div>
+		<div id="singleTestResult"></div>
+	</div>
 
-	<p id="output">Output here</p>
-	<!-- <p id="msg">Received msg</p> -->
-	<p id="bin">Received binary</p>
+	<div class="panel">
+		<h2>Controls</h2>
+		<button id="startBtn" class="btn-start" onclick="startSampling()">▶ Start</button>
+		<button id="stopBtn" class="btn-stop" onclick="stopSampling()" disabled>⏹ Stop</button>
+		<span id="status" style="margin-left: 20px;">Ready</span>
+	</div>
+
+	<div class="panel">
+		<h2>Live Statistics</h2>
+		<div class="stats">
+			<div class="stat-item">
+				<div class="stat-label">Sample Count</div>
+				<div class="stat-value" id="sampleCount">0</div>
+			</div>
+			<div class="stat-item">
+				<div class="stat-label">Elapsed Time (s)</div>
+				<div class="stat-value" id="elapsedTime">0.00</div>
+			</div>
+			<div class="stat-item">
+				<div class="stat-label">Sample Rate (Hz)</div>
+				<div class="stat-value" id="sampleRate">0</div>
+			</div>
+			<div class="stat-item">
+				<div class="stat-label">Last Run Time (ms)</div>
+				<div class="stat-value" id="lastRunTime">-</div>
+			</div>
+			<div class="stat-item" style="grid-column: span 2;">
+				<div class="stat-label">Avg Run Time (last 10) (ms)</div>
+				<div class="stat-value" id="avgRunTime">-</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel">
+		<h2>Export Data</h2>
+		<p>Download raw timing data for offline analysis:</p>
+		<button class="btn-export" onclick="downloadCSV()">📥 Download CSV</button>
+		<button class="btn-export" onclick="downloadJSON()">📥 Download JSON</button>
+	</div>
+
+	<div class="panel">
+		<h2>Calibration</h2>
+		<p>Run calibration to determine P-core vs E-core timing threshold:</p>
+		<button class="btn-calibrate" onclick="runCalibration()">🔧 Run Calibration</button>
+		<div id="calibrationResult"></div>
+	</div>
 </body>
-<style>
-	p {
-	  word-wrap: break-word;
-	  overflow-wrap: break-word;
-	  white-space: normal;
-	  word-break: break-all;
-	}
-	.container {
-	  width: 100%;
-	}
-</style>
+
 </html>
