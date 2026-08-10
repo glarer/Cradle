@@ -5,7 +5,7 @@
 2. Set scaling mode to performance
     1. `echo "active" | sudo tee /sys/devices/system/cpu/intel_pstate/status`
     2. `echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`
-3. Fix the maximum frequency of each core.
+3. (Optional) Fix the maximum frequency of each core.
     1. `MAX_FREQ=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq)`
 
 	2. `echo $MAX_FREQ | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_min_freq`
